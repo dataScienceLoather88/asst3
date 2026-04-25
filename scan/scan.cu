@@ -240,7 +240,7 @@ int find_repeats(int* device_input, int length, int* device_output) {
     cudaDeviceSynchronize();
 
     int final_count;
-    cudaMemcpy(&final_count, indices_scan_sum + (length - 1), sizeof(int), cudaMemcpyDeviceToHost)
+    cudaMemcpy(&final_count, indices_scan_sum + (length - 1), sizeof(int), cudaMemcpyDeviceToHost);
 
     cudaFree(duplicate_indices);
     cudaFree(indices_scan_sum);
