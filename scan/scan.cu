@@ -186,6 +186,25 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 // indices `i` for which `device_input[i] == device_input[i+1]`.
 //
 // Returns the total number of pairs found
+__global__ void
+repeat_kernel_mark_duplicates(int* device_input, int length, int* duplicate_indices){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i < length - 1){
+        duplicate_indices[i] = 0;
+        if(device_input[i] == device_input[i+1]){
+            duplicate_indices[i] = 1;
+        }
+    }
+}
+
+__global__ void 
+repeat_kernel_write_output(int *duplicate_indices, int *indices_scan_sum, int* device_output, int length){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(duplicate_indices[i] == 1 && i < length){
+        device_output[indices_scan_sum[i]] = i;
+    }
+}
+
 int find_repeats(int* device_input, int length, int* device_output) {
 
     // CS149 TODO:
@@ -200,7 +219,33 @@ int find_repeats(int* device_input, int length, int* device_output) {
     // must ensure that the results of find_repeats are correct given
     // the actual array length.
 
-    return 0; 
+    int *duplicate_indices;
+    int *indices_scan_sum;
+    int one = 1; int zero = 0;
+
+    cudaMalloc((void **)&duplicate_indices, nextPow2(length) * sizeof(int));
+    cudaMalloc((void **)&indices_scan_sum, nextPow2(length) * sizeof(int));
+
+    cudaMemcpy(duplicate_indices + (length - 1), &zero, sizeof(int), cudaMemcpyHostToDevice);
+
+    const int threads_per_block = 256;
+    const int blocks = (length+ threads_per_block - 1) / threads_per_block;
+
+    repeat_kernel_mark_duplicates<<<blocks, threads_per_block>>>(device_input, length, duplicate_indices);
+    cudaDeviceSynchronize();
+
+    exclusive_scan(duplicate_indices, length, indices_scan_sum);
+
+    repeat_kernel_write_output<<<blocks, threads_per_block>>>(duplicate_indices, indices_scan_sum, device_output, length);
+    cudaDeviceSynchronize();
+
+    int final_count;
+    cudaMemcpy(&final_count, indices_scan_sum + (length - 1), sizeof(int), cudaMemcpyDeviceToHost)
+
+    cudaFree(duplicate_indices);
+    cudaFree(indices_scan_sum);
+
+    return final_count; 
 }
 
 
