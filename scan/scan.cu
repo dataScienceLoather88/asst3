@@ -42,6 +42,25 @@ static inline int nextPow2(int n) {
 // Also, as per the comments in cudaScan(), you can implement an
 // "in-place" scan, since the timing harness makes a copy of input and
 // places it in result
+
+__global__ void
+scan_kernel_upsweep(int N, int* result, int two_dplus1, int two_d){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i % two_dplus1 == 0 && (i + two_dplus1 - 1) < N){
+        result[i+two_dplus1-1] += result[i+two_d-1];
+    }
+}
+
+__global__ void
+scan_kernel_downsweep(int N, int* result, int two_dplus1, int two_d){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i % two_dplus1 == 0 && (i + two_dplus1 - 1) < N){
+        int t = result[i+two_d-1];
+        result[i+two_d-1] = result[i+two_dplus1-1];
+        result[i+two_dplus1-1] += t;
+    }
+}
+
 void exclusive_scan(int* input, int N, int* result)
 {
 
@@ -54,7 +73,27 @@ void exclusive_scan(int* input, int N, int* result)
     // to CUDA kernel functions (that you must write) to implement the
     // scan.
 
+    const int threads_per_block = 256;
+    const int blocks = (N + threads_per_block - 1) / threads_per_block;
 
+    cudaMemcpy(result, input, N * sizeof(int), cudaMemcpyDeviceToDevice);
+
+    // upsweep phase
+    for (int two_d = 1; two_d <= N/2; two_d*=2) {
+        int two_dplus1 = 2*two_d;
+        scan_kernel_upsweep<<<blocks, threads_per_block>>>(N, result, two_dplus1, two_d);
+        cudaDeviceSynchronize();
+    }
+
+    int zero = 0;
+    cudaMemcpy(result + (N - 1), &zero, sizeof(int), cudaMemcpyHostToDevice);
+
+    // downsweep phase
+    for (int two_d = N/2; two_d >= 1; two_d /= 2) {
+        int two_dplus1 = 2*two_d;
+        scan_kernel_downsweep<<<blocks, threads_per_block>>>(N, result, two_dplus1, two_d);
+        cudaDeviceSynchronize();
+    }
 }
 
 
