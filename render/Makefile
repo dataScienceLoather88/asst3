@@ -5,8 +5,8 @@ CU_FILES   := cudaRenderer.cu benchmark.cu
 
 CU_DEPS    :=
 
-CC_FILES   := main.cpp display.cpp refRenderer.cpp \
-              noise.cpp ppm.cpp sceneLoader.cpp
+CC_FILES := main.cpp refRenderer.cpp \
+            noise.cpp ppm.cpp sceneLoader.cpp
 
 LOGS	   := logs
 
@@ -28,7 +28,7 @@ LIBS       :=
 FRAMEWORKS :=
 
 NVCCFLAGS=-O3 -m64
-LIBS += GL glut cudart
+LIBS += cudart
 
 ifneq ($(wildcard /opt/cuda-8.0/.*),)
 # Latedays
@@ -43,9 +43,8 @@ LDFRAMEWORKS := $(addprefix -framework , $(FRAMEWORKS))
 
 NVCC=nvcc
 
-OBJS=$(OBJDIR)/main.o $(OBJDIR)/display.o $(OBJDIR)/benchmark.o $(OBJDIR)/refRenderer.o \
+OBJS=$(OBJDIR)/main.o $(OBJDIR)/benchmark.o $(OBJDIR)/refRenderer.o \
      $(OBJDIR)/cudaRenderer.o $(OBJDIR)/noise.o $(OBJDIR)/ppm.o $(OBJDIR)/sceneLoader.o
-
 
 .PHONY: dirs clean
 
