@@ -185,8 +185,8 @@ int main(int argc, char** argv)
         if (!interactiveMode)
             startBenchmark(renderer, benchmarkFrameStart, benchmarkFrameEnd - benchmarkFrameStart, frameFilename);
         else {
-            glutInit(&argc, argv);
-            startRendererWithDisplay(renderer);
+            //glutInit(&argc, argv);
+            //startRendererWithDisplay(renderer);
         }
     }
 
