@@ -20,6 +20,15 @@ class CudaRenderer : public CircleRenderer {
   float* cudaDeviceRadius;
   float* cudaDeviceImageData;
 
+  //sali
+  //arrays to count circles contributing to a pixel
+  int* cudaDevicePixelCountTop;
+  int* cudaDevicePixelCountBottom;
+  
+  //jaggess arrays storing lists of circle IDs contributing to a pixel
+  int** cudaDevicePixelListTop;
+  int** cudaDevicePixelListBottom;
+
  public:
   CudaRenderer();
   virtual ~CudaRenderer();

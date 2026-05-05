@@ -428,6 +428,169 @@ __global__ void kernelRenderCircles() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
+//sali kernels
+__global__ void kernelCountCirclesPerPixel(int* pixelCount, int half) {
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= cuConstRendererParams.numCircles)
+        return;
+
+    int index3 = 3 * index;
+    float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+    float rad = cuConstRendererParams.radius[index];
+
+    short imageWidth = cuConstRendererParams.imageWidth;
+    short imageHeight = cuConstRendererParams.imageHeight;
+
+    //compute bounding box in screen coords
+    short minX = static_cast<short>(imageWidth * (p.x - rad));
+    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+    short minY = static_cast<short>(imageHeight * (p.y - rad));
+    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+    short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+    short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+    short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+    short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+
+    //clamp Y range to the correct half
+    int halfHeight = imageHeight / 2;
+    int halfMinY = half * halfHeight;
+    int halfMaxY = halfMinY + halfHeight;
+
+    screenMinY = max((int)screenMinY, halfMinY);
+    screenMaxY = min((int)screenMaxY, halfMaxY);
+
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+
+    for (int pixelY = screenMinY; pixelY < screenMaxY; pixelY++) {
+        for (int pixelX = screenMinX; pixelX < screenMaxX; pixelX++) {
+            float2 pixelCenter = make_float2(
+                invWidth * (static_cast<float>(pixelX) + 0.5f),
+                invHeight * (static_cast<float>(pixelY) + 0.5f)
+            );
+
+            float diffX = p.x - pixelCenter.x;
+            float diffY = p.y - pixelCenter.y;
+            if (diffX*diffX + diffY*diffY > rad*rad)
+                continue;
+
+            //index into the half's count array
+            int halfPixelIdx = (pixelY - halfMinY) * imageWidth + pixelX;
+            atomicAdd(&pixelCount[halfPixelIdx], 1);
+        }
+    }
+}
+
+__global__ void kernelFillPixelLists(int** pixelLists, int* fillCounters, int half) {
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= cuConstRendererParams.numCircles)
+        return;
+
+    int index3 = 3 * index;
+    float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+    float rad = cuConstRendererParams.radius[index];
+
+    short imageWidth = cuConstRendererParams.imageWidth;
+    short imageHeight = cuConstRendererParams.imageHeight;
+
+    short minX = static_cast<short>(imageWidth * (p.x - rad));
+    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+    short minY = static_cast<short>(imageHeight * (p.y - rad));
+    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+    short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+    short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+    short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+    short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+
+    int halfHeight = imageHeight / 2;
+    int halfMinY = half * halfHeight;
+    int halfMaxY = halfMinY + halfHeight;
+
+    screenMinY = max((int)screenMinY, halfMinY);
+    screenMaxY = min((int)screenMaxY, halfMaxY);
+
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+
+    for (int pixelY = screenMinY; pixelY < screenMaxY; pixelY++) {
+        for (int pixelX = screenMinX; pixelX < screenMaxX; pixelX++) {
+            float2 pixelCenter = make_float2(
+                invWidth * (static_cast<float>(pixelX) + 0.5f),
+                invHeight * (static_cast<float>(pixelY) + 0.5f)
+            );
+
+            float diffX = p.x - pixelCenter.x;
+            float diffY = p.y - pixelCenter.y;
+            if (diffX*diffX + diffY*diffY > rad*rad)
+                continue;
+
+            int halfPixelIdx = (pixelY - halfMinY) * imageWidth + pixelX;
+
+            //atomically grab the next available slot in this pixel's list
+            int slot = atomicAdd(&fillCounters[halfPixelIdx], 1);
+            pixelLists[halfPixelIdx][slot] = index;
+        }
+    }
+}
+
+__global__ void kernelShadePixels(int** pixelLists, int* pixelCounts, int half) {
+
+    int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
+    int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int imageWidth = cuConstRendererParams.imageWidth;
+    int imageHeight = cuConstRendererParams.imageHeight;
+
+    int halfHeight = imageHeight / 2;
+    int halfMinY = half * halfHeight;
+
+    //only processes pixels in the current half
+    if (pixelX >= imageWidth || pixelY >= halfHeight)
+        return;
+
+    int halfPixelIdx = pixelY * imageWidth + pixelX;
+    int count = pixelCounts[halfPixelIdx];
+
+    if (count == 0)
+        return;
+
+    int* list = pixelLists[halfPixelIdx];
+
+    // insertion sort b4 the shading process starts
+    for (int i = 1; i < count; i++) {
+        int key = list[i];
+        int j = i - 1;
+        while (j >= 0 && list[j] > key) {
+            list[j+1] = list[j];
+            j--;
+        }
+        list[j+1] = key;
+    }
+
+    // shade pixel in circle order
+    int actualPixelY = halfMinY + pixelY;
+    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (actualPixelY * imageWidth + pixelX)]);
+
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+
+    float2 pixelCenter = make_float2(
+        invWidth * (static_cast<float>(pixelX) + 0.5f),
+        invHeight * (static_cast<float>(actualPixelY) + 0.5f)
+    );
+
+    for (int i = 0; i < count; i++) {
+        int circleIdx = list[i];
+        float3 p = *(float3*)(&cuConstRendererParams.position[3 * circleIdx]);
+        shadePixel(circleIdx, pixelCenter, p, imgPtr);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
 
 
 CudaRenderer::CudaRenderer() {
@@ -444,6 +607,13 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceColor = NULL;
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
+
+    //sali 
+    //init new vars 2 null
+    cudaDevicePixelCountTop = NULL;
+    cudaDevicePixelCountBottom = NULL;
+    cudaDevicePixelListTop = NULL;
+    cudaDevicePixelListBottom = NULL;
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -465,6 +635,10 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(cudaDeviceColor);
         cudaFree(cudaDeviceRadius);
         cudaFree(cudaDeviceImageData);
+
+        //sali
+        cudaFree(cudaDevicePixelCountTop);
+        cudaFree(cudaDevicePixelCountBottom);
     }
 }
 
@@ -575,6 +749,10 @@ CudaRenderer::setup() {
 
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
+    //sali
+    int halfPixels = (image->width * image->height) / 2;
+    cudaMalloc(&cudaDevicePixelCountTop, sizeof(int) * halfPixels);
+    cudaMalloc(&cudaDevicePixelCountBottom, sizeof(int) * halfPixels);
 }
 
 // allocOutputImage --
@@ -633,7 +811,7 @@ CudaRenderer::advanceAnimation() {
     cudaDeviceSynchronize();
 }
 
-void
+/* void
 CudaRenderer::render() {
 
     // 256 threads per block is a healthy number
@@ -642,4 +820,78 @@ CudaRenderer::render() {
 
     kernelRenderCircles<<<gridDim, blockDim>>>();
     cudaDeviceSynchronize();
+} */
+
+void CudaRenderer::render() {
+
+    int imageWidth = image->width;
+    int imageHeight = image->height;
+    int halfHeight = imageHeight / 2;
+    int halfPixels = imageWidth * halfHeight;
+
+    dim3 circleBlockDim(256, 1);
+    dim3 circleGridDim((numCircles + circleBlockDim.x - 1) / circleBlockDim.x);
+
+    dim3 pixelBlockDim(16, 16);
+    dim3 pixelGridDim(
+        (imageWidth + pixelBlockDim.x - 1) / pixelBlockDim.x,
+        (halfHeight + pixelBlockDim.y - 1) / pixelBlockDim.y
+    );
+
+    for (int half = 0; half < 2; half++) {
+
+        int* pixelCount = (half == 0) ? cudaDevicePixelCountTop : cudaDevicePixelCountBottom;
+
+        // zero the count array for this half
+        cudaMemset(pixelCount, 0, sizeof(int) * halfPixels);
+
+        // kernel A: count circles per pixel
+        kernelCountCirclesPerPixel<<<circleGridDim, circleBlockDim>>>(pixelCount, half);
+        cudaDeviceSynchronize();
+
+        // copy counts to host to allocate jagged list
+        int* hostPixelCount = new int[halfPixels];
+        cudaMemcpy(hostPixelCount, pixelCount, sizeof(int) * halfPixels, cudaMemcpyDeviceToHost);
+
+        // allocate jagged list on device: one int* per pixel
+        int** hostPixelLists = new int*[halfPixels];
+        for (int i = 0; i < halfPixels; i++) {
+            if (hostPixelCount[i] > 0)
+                cudaMalloc(&hostPixelLists[i], sizeof(int) * hostPixelCount[i]);
+            else
+                hostPixelLists[i] = NULL;
+        }
+
+        // copy the array of pointers to device
+        int** cudaDevicePixelList;
+        cudaMalloc(&cudaDevicePixelList, sizeof(int*) * halfPixels);
+        cudaMemcpy(cudaDevicePixelList, hostPixelLists, sizeof(int*) * halfPixels, cudaMemcpyHostToDevice);
+
+        // allocate and zero fill counters
+        int* cudaDeviceFillCounters;
+        cudaMalloc(&cudaDeviceFillCounters, sizeof(int) * halfPixels);
+        cudaMemset(cudaDeviceFillCounters, 0, sizeof(int) * halfPixels);
+
+        // kernel B: fill pixel lists
+        kernelFillPixelLists<<<circleGridDim, circleBlockDim>>>(cudaDevicePixelList, cudaDeviceFillCounters, half);
+        cudaDeviceSynchronize();
+
+        // kernel C: sort and shade
+        kernelShadePixels<<<pixelGridDim, pixelBlockDim>>>(cudaDevicePixelList, pixelCount, half);
+        cudaDeviceSynchronize();
+
+        // free per-pixel list allocations
+        for (int i = 0; i < halfPixels; i++) {
+            if (hostPixelLists[i] != NULL)
+                cudaFree(hostPixelLists[i]);
+        }
+
+        // free device-side pointer array and fill counters
+        cudaFree(cudaDevicePixelList);
+        cudaFree(cudaDeviceFillCounters);
+
+        // free host-side temporaries
+        delete[] hostPixelCount;
+        delete[] hostPixelLists;
+    }
 }
