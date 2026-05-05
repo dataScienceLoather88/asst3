@@ -560,7 +560,7 @@ __global__ void kernelShadePixels(int** pixelLists, int* pixelCounts, int half) 
 
     int* list = pixelLists[halfPixelIdx];
 
-    // insertion sort b4 the shading process starts
+    //insertion sort b4 the shading process starts
     for (int i = 1; i < count; i++) {
         int key = list[i];
         int j = i - 1;
@@ -571,7 +571,7 @@ __global__ void kernelShadePixels(int** pixelLists, int* pixelCounts, int half) 
         list[j+1] = key;
     }
 
-    // shade pixel in circle order
+    //shade pixel in circle order
     int actualPixelY = halfMinY + pixelY;
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (actualPixelY * imageWidth + pixelX)]);
 
@@ -822,6 +822,7 @@ CudaRenderer::render() {
     cudaDeviceSynchronize();
 } */
 
+//sali render
 void CudaRenderer::render() {
 
     int imageWidth = image->width;
@@ -842,18 +843,16 @@ void CudaRenderer::render() {
 
         int* pixelCount = (half == 0) ? cudaDevicePixelCountTop : cudaDevicePixelCountBottom;
 
-        // zero the count array for this half
         cudaMemset(pixelCount, 0, sizeof(int) * halfPixels);
 
-        // kernel A: count circles per pixel
+        // kernel A; count the circles for each pixel that contribute to it 
         kernelCountCirclesPerPixel<<<circleGridDim, circleBlockDim>>>(pixelCount, half);
         cudaDeviceSynchronize();
 
-        // copy counts to host to allocate jagged list
         int* hostPixelCount = new int[halfPixels];
         cudaMemcpy(hostPixelCount, pixelCount, sizeof(int) * halfPixels, cudaMemcpyDeviceToHost);
 
-        // allocate jagged list on device: one int* per pixel
+        //allocate jagged list per pixel 
         int** hostPixelLists = new int*[halfPixels];
         for (int i = 0; i < halfPixels; i++) {
             if (hostPixelCount[i] > 0)
@@ -862,35 +861,31 @@ void CudaRenderer::render() {
                 hostPixelLists[i] = NULL;
         }
 
-        // copy the array of pointers to device
         int** cudaDevicePixelList;
         cudaMalloc(&cudaDevicePixelList, sizeof(int*) * halfPixels);
         cudaMemcpy(cudaDevicePixelList, hostPixelLists, sizeof(int*) * halfPixels, cudaMemcpyHostToDevice);
 
-        // allocate and zero fill counters
         int* cudaDeviceFillCounters;
         cudaMalloc(&cudaDeviceFillCounters, sizeof(int) * halfPixels);
         cudaMemset(cudaDeviceFillCounters, 0, sizeof(int) * halfPixels);
 
-        // kernel B: fill pixel lists
+        // kernel B; fill pixel lists
         kernelFillPixelLists<<<circleGridDim, circleBlockDim>>>(cudaDevicePixelList, cudaDeviceFillCounters, half);
         cudaDeviceSynchronize();
 
-        // kernel C: sort and shade
+        //kernel C; sort/shade
         kernelShadePixels<<<pixelGridDim, pixelBlockDim>>>(cudaDevicePixelList, pixelCount, half);
         cudaDeviceSynchronize();
 
-        // free per-pixel list allocations
+        //free per-pixel list allocations
         for (int i = 0; i < halfPixels; i++) {
             if (hostPixelLists[i] != NULL)
                 cudaFree(hostPixelLists[i]);
         }
 
-        // free device-side pointer array and fill counters
         cudaFree(cudaDevicePixelList);
         cudaFree(cudaDeviceFillCounters);
 
-        // free host-side temporaries
         delete[] hostPixelCount;
         delete[] hostPixelLists;
     }
